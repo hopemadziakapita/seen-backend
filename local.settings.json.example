@@ -1,0 +1,16 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AZURE_OPENAI_ENDPOINT": "https://<your-aoai-resource>.openai.azure.com",
+    "AZURE_OPENAI_API_KEY": "<local-dev-only-key>",
+    "AZURE_OPENAI_API_VERSION": "2024-10-21",
+    "AZURE_OPENAI_DEPLOYMENT": "gpt-5-mini",
+    "ENTRIES_CONTAINER": "seen-data",
+    "ENTRIES_BLOB_NAME": "entries.json"
+  },
+  "Host": {
+    "CORS": "*"
+  }
+}

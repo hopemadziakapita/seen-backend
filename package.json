@@ -1,0 +1,25 @@
+{
+  "name": "seen-backend",
+  "version": "0.2.0",
+  "private": true,
+  "description": "AI & data flow backend for Seen — Azure Functions + Azure OpenAI",
+  "main": "dist/functions/*.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json -w",
+    "prestart": "npm run build",
+    "start": "func start",
+    "package": "npm run build && rm -f release.zip && zip -r release.zip dist host.json package.json package-lock.json node_modules -x '*.map'"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.6.1",
+    "@azure/storage-blob": "^12.25.0",
+    "openai": "^4.71.1",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.4",
+    "@types/uuid": "^9.0.8",
+    "typescript": "^5.6.3"
+  }
+}

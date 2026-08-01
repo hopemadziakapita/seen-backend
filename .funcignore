@@ -1,0 +1,13 @@
+*.ts
+!dist/**/*.js
+.git*
+.vscode
+local.settings.json
+local.settings.json.example
+test
+.gitignore
+tsconfig.json
+README.md
+DEPLOY.md
+src
+*.map
