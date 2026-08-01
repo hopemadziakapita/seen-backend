@@ -6,9 +6,9 @@ import { getRecentClueIds } from "./recentClues";
 
 const clues = cluesData as Clue[];
 
-export async function buildDayPreview(context: DailyContext) {
+export async function buildDayPreview(context: DailyContext, userId: string) {
   const interpretedSignals = interpretSignals(context);
-  const recentClueIds = await getRecentClueIds(context.date);
+  const recentClueIds = await getRecentClueIds(userId, context.date);
   const ranked = selectDisplayClues(clues, interpretedSignals, recentClueIds);
 
   return {

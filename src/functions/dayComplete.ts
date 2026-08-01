@@ -14,6 +14,7 @@ app.http("dayComplete", {
   route: "day/complete",
   handler: async (request: HttpRequest) => {
     const body = (await request.json().catch(() => null)) as {
+      userId?: string;
       date?: string;
       context?: DailyContext;
       interpretedSignals?: InterpretedSignal[];
@@ -21,8 +22,8 @@ app.http("dayComplete", {
       selectedClues?: ClueSelection[];
     } | null;
 
-    if (!body?.date || !body.context) {
-      return badRequest("date and context are required.");
+    if (!body?.userId || !body.date || !body.context) {
+      return badRequest("userId, date, and context are required.");
     }
 
     // Enforce the 3-selection cap server-side too, regardless of client behavior.
@@ -39,6 +40,7 @@ app.http("dayComplete", {
 
     const entry: DailyEntry = {
       id: uuidv4(),
+      userId: body.userId,
       date: body.date,
       context: body.context,
       interpretedSignals: body.interpretedSignals ?? [],
@@ -47,7 +49,7 @@ app.http("dayComplete", {
       generatedSummary,
     };
 
-    await saveEntry(entry);
+    await saveEntry(body.userId, entry);
     return json(200, entry);
   },
 });

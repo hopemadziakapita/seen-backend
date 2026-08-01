@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# Seen backend — Azure deployment script.
+# Seen backend — DEVELOPMENT deployment script.
 # Provisions: resource group, storage account, Application Insights,
 # a Linux Consumption Function App, an Azure OpenAI resource + model
-# deployment, and a Key Vault holding the Azure OpenAI key (accessed by
-# the Function App's managed identity via a Key Vault reference).
+# deployment, a Key Vault holding the Azure OpenAI key, and a Cosmos DB
+# account with per-user partitioned storage.
 #
-# Edit the variables below, then run: bash deploy.sh
+# This is the CHEAP deployment — no VNet, no private endpoints, no App
+# Gateway. All services use public endpoints with key-based auth.
+# Suitable for demos and local development.
+#
+# For the HIPAA-compliant production setup with VNet isolation, private
+# endpoints, and WAF, use deploy-production.sh instead.
+#
+# Edit the variables below, then run: bash deploy-dev.sh
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # 1. Configuration — edit these before running
 # ---------------------------------------------------------------------------
-RESOURCE_GROUP="seen-backend-rg"
-LOCATION="eastus2"                              # must support both Functions + Azure OpenAI
+RESOURCE_GROUP="seen-backend-rg-dev"
+LOCATION="eastus2"
 
-# Suffix is generated once and cached in .deploy-suffix so re-running this
-# script after a failure RESUMES against the same resources instead of
-# abandoning them and creating a fresh, duplicate set under a new name.
-# Delete .deploy-suffix yourself if you want a genuinely fresh deployment.
 SUFFIX_FILE=".deploy-suffix"
 if [ -f "$SUFFIX_FILE" ]; then
   SUFFIX=$(cat "$SUFFIX_FILE")
@@ -26,32 +29,30 @@ else
   echo "$SUFFIX" > "$SUFFIX_FILE"
 fi
 
-STORAGE_ACCOUNT="seenbackendsa${SUFFIX}"        # <=24 chars, lowercase letters/numbers only
+STORAGE_ACCOUNT="seenbackendsa${SUFFIX}"
 FUNCTION_APP="seen-backend-func-${SUFFIX}"
 APP_INSIGHTS="seen-backend-ai-${SUFFIX}"
-KEY_VAULT="seen-backend-kv-${SUFFIX}"           # <=24 chars
+KEY_VAULT="seen-backend-kv-${SUFFIX}"
+
+COSMOS_ACCOUNT="seen-backend-cosmos-${SUFFIX}"
+COSMOS_DATABASE="seen-db"
+COSMOS_CONTAINER="entries"
 
 AOAI_ACCOUNT="seen-backend-aoai-${SUFFIX}"
 AOAI_DEPLOYMENT="gpt-5-mini"
 AOAI_MODEL="gpt-5-mini"
 AOAI_MODEL_VERSION="2025-08-07"
-AOAI_SKU="GlobalStandard"                       # gpt-5-mini and newer models are GlobalStandard-only (no plain "Standard" SKU)
+AOAI_SKU="GlobalStandard"
 AOAI_CAPACITY="10"
 
-# Before relying on the values above, they can drift as Microsoft deprecates
-# older models/SKUs. Re-check what's actually available for your resource with:
-#   az cognitiveservices account list-models --name <AOAI_ACCOUNT> --resource-group <RESOURCE_GROUP> \
-#     --query "[?contains(name, 'mini') && lifecycleStatus=='GenerallyAvailable'].{name:name, version:version, skus:skus[].name}"
+NODE_VERSION="22"
 
-NODE_VERSION="22"                               # Node 20 reached end-of-life 2026-04-30. Node 24 is listed by
-                                                 # `az functionapp list-runtimes --os linux` but its Functions language
-                                                 # worker was unreliable in testing (host stuck ServiceUnavailable);
-                                                 # Node 22 (Active LTS) worked. Re-check before assuming this is still current.
-
+echo "=== DEVELOPMENT deployment (no VNet, no App Gateway) ==="
 echo "Resource group:  $RESOURCE_GROUP"
 echo "Function App:    $FUNCTION_APP"
 echo "Storage account: $STORAGE_ACCOUNT"
 echo "Key Vault:       $KEY_VAULT"
+echo "Cosmos DB:       $COSMOS_ACCOUNT"
 echo "Azure OpenAI:    $AOAI_ACCOUNT (deployment: $AOAI_DEPLOYMENT)"
 echo
 
@@ -61,7 +62,7 @@ echo
 az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
 
 # ---------------------------------------------------------------------------
-# 3. Storage account — Functions runtime storage AND the DailyEntry blob store
+# 3. Storage account — Functions runtime storage
 # ---------------------------------------------------------------------------
 az storage account create \
   --name "$STORAGE_ACCOUNT" \
@@ -71,7 +72,7 @@ az storage account create \
   --output none
 
 # ---------------------------------------------------------------------------
-# 4. Application Insights (function logs/metrics)
+# 4. Application Insights
 # ---------------------------------------------------------------------------
 az monitor app-insights component create \
   --app "$APP_INSIGHTS" \
@@ -96,7 +97,7 @@ az functionapp create \
   --output none
 
 # ---------------------------------------------------------------------------
-# 6. Azure OpenAI resource + a chat model deployment
+# 6. Azure OpenAI resource + model deployment
 # ---------------------------------------------------------------------------
 az cognitiveservices account create \
   --name "$AOAI_ACCOUNT" \
@@ -127,8 +128,7 @@ AOAI_KEY=$(az cognitiveservices account keys list \
   --query key1 -o tsv)
 
 # ---------------------------------------------------------------------------
-# 7. Key Vault — store the Azure OpenAI key as a secret (access-policy model,
-#    not RBAC, so `set-policy` below works without extra role-assignment delay)
+# 7. Key Vault — store the Azure OpenAI key as a secret
 # ---------------------------------------------------------------------------
 az keyvault create \
   --name "$KEY_VAULT" \
@@ -143,12 +143,57 @@ az keyvault secret set \
   --value "$AOAI_KEY" \
   --output none
 
-SECRET_URI=$(az keyvault secret show \
+AOAI_SECRET_URI=$(az keyvault secret show \
   --vault-name "$KEY_VAULT" --name "AzureOpenAIApiKey" \
   --query "id" -o tsv)
 
 # ---------------------------------------------------------------------------
-# 8. Grant the Function App's managed identity read access to the secret
+# 8. Cosmos DB — NoSQL API, per-user partitioned container
+# ---------------------------------------------------------------------------
+az cosmosdb create \
+  --name "$COSMOS_ACCOUNT" \
+  --resource-group "$RESOURCE_GROUP" \
+  --locations regionName="$LOCATION" failoverPriority=0 \
+  --default-consistency-level Session \
+  --enable-free-tier true \
+  --output none
+
+az cosmosdb sql database create \
+  --account-name "$COSMOS_ACCOUNT" \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$COSMOS_DATABASE" \
+  --output none
+
+az cosmosdb sql container create \
+  --account-name "$COSMOS_ACCOUNT" \
+  --resource-group "$RESOURCE_GROUP" \
+  --database-name "$COSMOS_DATABASE" \
+  --name "$COSMOS_CONTAINER" \
+  --partition-key-path "/userId" \
+  --throughput 400 \
+  --output none
+
+COSMOS_ENDPOINT=$(az cosmosdb show \
+  --name "$COSMOS_ACCOUNT" --resource-group "$RESOURCE_GROUP" \
+  --query documentEndpoint -o tsv)
+
+COSMOS_KEY=$(az cosmosdb keys list \
+  --name "$COSMOS_ACCOUNT" --resource-group "$RESOURCE_GROUP" \
+  --query primaryMasterKey -o tsv)
+
+# Store the Cosmos key in Key Vault too
+az keyvault secret set \
+  --vault-name "$KEY_VAULT" \
+  --name "CosmosKey" \
+  --value "$COSMOS_KEY" \
+  --output none
+
+COSMOS_SECRET_URI=$(az keyvault secret show \
+  --vault-name "$KEY_VAULT" --name "CosmosKey" \
+  --query "id" -o tsv)
+
+# ---------------------------------------------------------------------------
+# 9. Grant the Function App's managed identity read access to Key Vault
 # ---------------------------------------------------------------------------
 az functionapp identity assign \
   --name "$FUNCTION_APP" \
@@ -166,10 +211,7 @@ az keyvault set-policy \
   --output none
 
 # ---------------------------------------------------------------------------
-# 9. App settings — the API key is a Key Vault reference, resolved by the
-#    platform at runtime using the Function App's managed identity. The key
-#    itself never appears in app settings, deployment logs, or this script's
-#    output beyond the one-time secret upload above.
+# 10. App settings — secrets via Key Vault references
 # ---------------------------------------------------------------------------
 az functionapp config appsettings set \
   --name "$FUNCTION_APP" \
@@ -178,17 +220,16 @@ az functionapp config appsettings set \
     "AZURE_OPENAI_ENDPOINT=$AOAI_ENDPOINT" \
     "AZURE_OPENAI_API_VERSION=2024-10-21" \
     "AZURE_OPENAI_DEPLOYMENT=$AOAI_DEPLOYMENT" \
-    "ENTRIES_CONTAINER=seen-data" \
-    "ENTRIES_BLOB_NAME=entries.json" \
-    "AZURE_OPENAI_API_KEY=@Microsoft.KeyVault(SecretUri=$SECRET_URI)" \
+    "AZURE_OPENAI_API_KEY=@Microsoft.KeyVault(SecretUri=$AOAI_SECRET_URI)" \
+    "COSMOS_ENDPOINT=$COSMOS_ENDPOINT" \
+    "COSMOS_KEY=@Microsoft.KeyVault(SecretUri=$COSMOS_SECRET_URI)" \
+    "COSMOS_DATABASE=$COSMOS_DATABASE" \
+    "COSMOS_CONTAINER=$COSMOS_CONTAINER" \
     "SCM_DO_BUILD_DURING_DEPLOYMENT=false" \
   --output none
 
 # ---------------------------------------------------------------------------
-# 10. Build locally, then prune to production deps only, then zip-deploy.
-#     Order matters: the TypeScript compiler is a devDependency, so it must
-#     still be installed when `npm run build` runs. Stripping dev deps has to
-#     happen AFTER the build, not before.
+# 11. Build + deploy code
 # ---------------------------------------------------------------------------
 npm install
 npm run build
@@ -201,11 +242,10 @@ az functionapp deployment source config-zip \
   --resource-group "$RESOURCE_GROUP" \
   --src release.zip
 
-# Reinstall dev dependencies locally so `npm run build`/`npm run watch` keep working after this script
 npm install
 
 # ---------------------------------------------------------------------------
-# 11. Restart so the Key Vault reference resolves, then fetch a function key
+# 12. Restart + print connection info
 # ---------------------------------------------------------------------------
 az functionapp restart --name "$FUNCTION_APP" --resource-group "$RESOURCE_GROUP"
 echo "Waiting 30s for the app to finish restarting..."
@@ -217,7 +257,7 @@ FUNCTION_KEY=$(az functionapp keys list \
 
 echo
 echo "=========================================================================="
-echo "Deployed."
+echo "Deployed (DEVELOPMENT mode — no VNet, public endpoints)."
 echo "Base URL:     https://${FUNCTION_APP}.azurewebsites.net/api"
 echo "Function key: ${FUNCTION_KEY}"
 echo

@@ -59,6 +59,7 @@ export type ClueSelection = {
 
 export type DailyEntry = {
   id: string;
+  userId: string;
   date: string;
   context: DailyContext;
   interpretedSignals: InterpretedSignal[];

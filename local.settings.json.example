@@ -7,8 +7,10 @@
     "AZURE_OPENAI_API_KEY": "<local-dev-only-key>",
     "AZURE_OPENAI_API_VERSION": "2024-10-21",
     "AZURE_OPENAI_DEPLOYMENT": "gpt-5-mini",
-    "ENTRIES_CONTAINER": "seen-data",
-    "ENTRIES_BLOB_NAME": "entries.json"
+    "COSMOS_ENDPOINT": "https://<your-cosmos-account>.documents.azure.com:443/",
+    "COSMOS_KEY": "<local-dev-only-key>",
+    "COSMOS_DATABASE": "seen-db",
+    "COSMOS_CONTAINER": "entries"
   },
   "Host": {
     "CORS": "*"

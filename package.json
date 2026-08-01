@@ -12,8 +12,8 @@
     "package": "npm run build && rm -f release.zip && zip -r release.zip dist host.json package.json package-lock.json node_modules -x '*.map'"
   },
   "dependencies": {
+    "@azure/cosmos": "^4.2.0",
     "@azure/functions": "^4.6.1",
-    "@azure/storage-blob": "^12.25.0",
     "openai": "^4.71.1",
     "uuid": "^9.0.1"
   },
