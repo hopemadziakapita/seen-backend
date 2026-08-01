@@ -21,7 +21,7 @@ set -euo pipefail
 RESOURCE_GROUP="seen-backend-rg-dev"
 LOCATION="eastus2"
 
-SUFFIX_FILE=".deploy-suffix"
+SUFFIX_FILE=".deploy-suffix-development"
 if [ -f "$SUFFIX_FILE" ]; then
   SUFFIX=$(cat "$SUFFIX_FILE")
 else

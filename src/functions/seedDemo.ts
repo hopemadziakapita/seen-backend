@@ -12,6 +12,7 @@ const DEMO_USER_IDS: Record<DemoProfileKey, string> = {
   A: "demo-profile-a",
   B: "demo-profile-b",
   C: "demo-profile-c",
+  D: "demo-profile-d",
 };
 
 // Runs all three demo profiles through the full pipeline (auto-selecting the
