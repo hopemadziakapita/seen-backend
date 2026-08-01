@@ -9,13 +9,14 @@ app.http("patterns", {
   authLevel: "function",
   route: "patterns",
   handler: async (request: HttpRequest) => {
+    const userId = request.query.get("userId");
     const clueA = request.query.get("clueA");
     const clueB = request.query.get("clueB");
-    if (!clueA || !clueB) {
-      return badRequest("clueA and clueB query params are required.");
+    if (!userId || !clueA || !clueB) {
+      return badRequest("userId, clueA, and clueB query params are required.");
     }
 
-    const entries = await loadEntries();
+    const entries = await loadEntries(userId);
     const observation = calculateCoOccurrence(entries, clueA, clueB);
     const text = describePattern(observation, buildClueTitleLookup(allClues()));
     return json(200, { observation, text });

@@ -13,14 +13,16 @@ deterministic, zero-AI logic operating only on data the phone already has —
 there is no reason to pay a network round-trip for them. That logic runs
 **on-device**; see "On-device logic" below for the exact rules to port.
 
-- **Compute**: Azure Functions (Node.js 20, Linux Consumption plan, v4 programming model)
+- **Compute**: Azure Functions (Node.js 22, v4 programming model). Dev: Linux Consumption plan. Production: Elastic Premium EP1 with VNet Integration.
 - **AI**: Azure OpenAI (chat completions + function calling for structured output)
 - **Secrets**: Azure Key Vault, read via a Key Vault reference resolved by the
   Function App's system-assigned managed identity — the API key is never in
   app settings, code, or logs in plaintext
-- **Persistence**: Azure Blob Storage (a single JSON blob in the Function
-  App's own storage account), replacing the local-file store used in early
-  prototyping
+- **Persistence**: Azure Cosmos DB (NoSQL API), partitioned by `/userId` for
+  per-user data isolation
+- **Network (production)**: VNet with private endpoints for Cosmos DB, Key
+  Vault, and Storage. Application Gateway with WAF v2 as the single public
+  entry point. Function App is not publicly accessible.
 
 ## Project layout
 
@@ -39,7 +41,8 @@ src/
     reflectionEngine.ts     AI whole-day reflection (generate + user-steered refine), same safety rules
     textSafety.ts           shared causal/diagnostic phrase matching used by all three AI-text engines
     patterns.ts             calculateCoOccurrence() + associative-only text
-    store.ts                Blob-backed DailyEntry persistence (ETag-conditional writes)
+    cosmosClient.ts         Shared Cosmos DB client factory
+    store.ts                Cosmos DB-backed DailyEntry persistence (per-user partitioned)
     recentClues.ts          recent-clue lookup for the scoring repeat penalty
     dayPreview.ts           signals+scoring pipeline, used internally by seed-demo only (no longer HTTP-exposed)
     fallbacks.ts            category-based fallback questions
@@ -61,8 +64,8 @@ All routes are under `/api` and require a function key (`?code=...` or
 | `/api/day/complete` | POST | `{ date, context, interpretedSignals, displayedClueIds, selectedClues }` → generates the summary and saves a `DailyEntry` |
 | `/api/day/reflection` | POST | `{ context, interpretedSignals, moments: [{clueId, clueTitle, text}] }` → `{ reflection }`, a warm 3–5 sentence narrative built only from free-text moments (no multiple-choice `answerOption` needed). `context`/`interpretedSignals` are accepted for request consistency but not sent to the AI — only the user-confirmed moments are, per the minimum-necessary-data rule. If a moment's text mentions immediate danger/self-harm/harm to others (checked by a pre-AI-call phrase scan), the standard reflection is skipped and `reflection` is a fixed message pointing to the 988 Suicide & Crisis Lifeline instead. Additive alongside `/api/day/complete` — doesn't touch `generatedSummary` or persistence. |
 | `/api/day/reflection/refine` | POST | `{ originalReflection, moments, steeringText }` → `{ reflection }`, regenerated to match the user's own steering note ("make it sound more like you") without inventing new facts. Falls back to `originalReflection` unchanged if the AI call fails, so "restore original" always has something coherent. |
-| `/api/entries` | GET | All saved `DailyEntry` records |
-| `/api/patterns?clueA=&clueB=` | GET | Co-occurrence + associative-language text for two clues |
+| `/api/entries?userId=` | GET | All saved `DailyEntry` records for a user |
+| `/api/patterns?userId=&clueA=&clueB=` | GET | Co-occurrence + associative-language text for two clues (for a user) |
 | `/api/seed-demo` | POST | Runs all 3 demo profiles end-to-end and saves them (useful before calling `/api/patterns`) |
 | `/api/week/insights` | POST | `{ days: WeeklyDay[] }` (up to 7 days of sleep/movement/weather/calendar + reflection content) → `{ patternWorthNoticing, whatMayBeHelping, themes }`. One Azure OpenAI call, schema-forced via tool-calling like `/api/follow-up-question`. The passive-context timeline and reflection-completion stats shown alongside this are calculated client-side directly from the same dataset — this endpoint only produces the three AI-generated sections. Quotes in `themes` are server-verified as exact substrings of the submitted `reflection.finalText` values; unmatched quotes are dropped. Falls back to a static "not enough data" response (same shape, `confidence: "low"`) if Azure OpenAI isn't configured, times out, or returns something that fails validation. |
 
@@ -181,19 +184,53 @@ function keys.
 
 ## Deploying to Azure
 
-`deploy.sh` provisions everything from scratch and deploys the code in one
-run: resource group, storage account, Application Insights, the Function App,
-an Azure OpenAI resource + `gpt-5-mini` deployment, and a Key Vault holding
-the Azure OpenAI key (granted to the Function App via managed identity).
+Two deployment scripts are provided. Both provision everything from scratch
+and deploy the code in one run.
+
+### `deploy-dev.sh` — Development / hackathon (near-zero cost)
+
+Consumption plan, public endpoints, Cosmos DB with free tier. No VNet, no
+private endpoints, no App Gateway. Suitable for demos and development.
+
+### `deploy-production.sh` — HIPAA-compliant architecture
+
+> **WARNING: The production deployment costs approximately $470/month.**
+>
+> - Elastic Premium EP1 Function App: ~$220/mo
+> - Application Gateway WAF v2: ~$250/mo
+> - Cosmos DB (400 RU/s): ~$25/mo (free tier not used in production)
+> - Private endpoints + DNS zones: negligible
+>
+> **Do not run this script unless you understand the cost implications.**
+> Use `deploy-dev.sh` for development and demos.
+
+Production architecture:
+- **VNet** with 3 subnets (gateway, function app, private endpoints)
+- **Application Gateway with WAF v2** — the only public entry point,
+  OWASP 3.2 ruleset
+- **Function App** — VNet-integrated, not publicly accessible, traffic
+  restricted to the App Gateway subnet only
+- **Cosmos DB** — private endpoint, public access disabled
+- **Key Vault** — private endpoint, public access disabled
+- **Storage Account** — private endpoint, public access disabled
+
+> **Note on HIPAA compliance**: Infrastructure alone does not make you
+> HIPAA-compliant. You also need: a signed Business Associate Agreement
+> (BAA) with Microsoft, per-user authentication (OAuth/JWT — not yet
+> implemented), formal audit logging of PHI access, and a documented data
+> handling policy. This architecture provides the network isolation and
+> data partitioning foundation those requirements build on.
+
+### Running either script
 
 ```bash
-# 1. edit the variables at the top of deploy.sh (resource group, location, etc.)
+# 1. edit the variables at the top of the script
 # 2. log in and pick the right subscription
 az login
 az account set --subscription "<subscription-name-or-id>"
 
 # 3. run it
-bash deploy.sh
+bash deploy-dev.sh          # or deploy-production.sh
 ```
 
 The script prints the base URL and a function key at the end. If your
@@ -237,8 +274,10 @@ az functionapp deployment source config-zip \
 npm install   # restore dev deps locally
 ```
 
-**Tearing everything down**: `bash teardown.sh` (deletes the whole resource
-group after a typed confirmation).
+**Tearing everything down**: `bash teardown.sh` — prompts you to pick the
+resource group (dev or production) and deletes it after typed confirmation.
+Production teardowns can take 5–10 minutes because the App Gateway
+deprovisions slowly.
 
 ## Privacy & safety notes carried into the code
 

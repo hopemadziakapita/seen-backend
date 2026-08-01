@@ -1,88 +1,48 @@
-import { BlobServiceClient, ContainerClient, RestError } from "@azure/storage-blob";
+import { getContainer } from "./cosmosClient";
 import { DailyEntry } from "../types";
 
-// Reuses the Function App's own storage account (the one Azure Functions
-// already requires for its runtime) rather than provisioning a separate
-// database for a prototype-scale entry log.
-const connectionString = process.env.AzureWebJobsStorage ?? process.env.AZURE_STORAGE_CONNECTION_STRING;
-const containerName = process.env.ENTRIES_CONTAINER ?? "seen-data";
-const blobName = process.env.ENTRIES_BLOB_NAME ?? "entries.json";
-
-let containerClientPromise: Promise<ContainerClient> | null = null;
-
-function getContainerClient(): Promise<ContainerClient> {
-  if (!connectionString) {
-    throw new Error("AzureWebJobsStorage (or AZURE_STORAGE_CONNECTION_STRING) is not configured");
-  }
-  if (!containerClientPromise) {
-    containerClientPromise = (async () => {
-      const serviceClient = BlobServiceClient.fromConnectionString(connectionString);
-      const container = serviceClient.getContainerClient(containerName);
-      await container.createIfNotExists();
-      return container;
-    })();
-  }
-  return containerClientPromise;
+export async function loadEntries(userId: string): Promise<DailyEntry[]> {
+  const container = getContainer();
+  const { resources } = await container.items
+    .query<DailyEntry>({
+      query: "SELECT * FROM c WHERE c.userId = @userId ORDER BY c.date DESC",
+      parameters: [{ name: "@userId", value: userId }],
+    })
+    .fetchAll();
+  return resources;
 }
 
-async function readEntriesWithEtag(): Promise<{ entries: DailyEntry[]; etag: string | undefined }> {
-  const container = await getContainerClient();
-  const blockBlob = container.getBlockBlobClient(blobName);
-  const exists = await blockBlob.exists();
-  if (!exists) return { entries: [], etag: undefined };
+export async function loadEntriesForDateRange(
+  userId: string,
+  startDate: string,
+  endDate: string,
+): Promise<DailyEntry[]> {
+  const container = getContainer();
+  const { resources } = await container.items
+    .query<DailyEntry>({
+      query:
+        "SELECT * FROM c WHERE c.userId = @userId AND c.date >= @start AND c.date <= @end ORDER BY c.date ASC",
+      parameters: [
+        { name: "@userId", value: userId },
+        { name: "@start", value: startDate },
+        { name: "@end", value: endDate },
+      ],
+    })
+    .fetchAll();
+  return resources;
+}
 
-  const props = await blockBlob.getProperties();
-  const download = await blockBlob.downloadToBuffer();
-  try {
-    return { entries: JSON.parse(download.toString("utf-8")) as DailyEntry[], etag: props.etag };
-  } catch {
-    return { entries: [], etag: props.etag };
+export async function saveEntry(userId: string, entry: DailyEntry): Promise<DailyEntry> {
+  const container = getContainer();
+  const doc = { ...entry, userId };
+  const { resource } = await container.items.upsert(doc);
+  return (resource as unknown) as DailyEntry;
+}
+
+export async function clearEntries(userId: string): Promise<void> {
+  const entries = await loadEntries(userId);
+  const container = getContainer();
+  for (const entry of entries) {
+    await container.item(entry.id, userId).delete();
   }
-}
-
-export async function loadEntries(): Promise<DailyEntry[]> {
-  const { entries } = await readEntriesWithEtag();
-  return entries;
-}
-
-/**
- * Saves an entry, replacing any existing entry for the same date. Uses an
- * ETag-conditional upload with a short retry loop so two near-simultaneous
- * writes don't silently clobber each other (blob storage has no native
- * read-modify-write primitive).
- */
-export async function saveEntry(entry: DailyEntry): Promise<DailyEntry> {
-  const container = await getContainerClient();
-  const blockBlob = container.getBlockBlobClient(blobName);
-  const MAX_RETRIES = 5;
-
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    const { entries, etag } = await readEntriesWithEtag();
-    const next = entries.filter((e) => e.date !== entry.date);
-    next.push(entry);
-    const payload = Buffer.from(JSON.stringify(next, null, 2), "utf-8");
-
-    try {
-      await blockBlob.upload(payload, payload.length, {
-        conditions: etag ? { ifMatch: etag } : { ifNoneMatch: "*" },
-        blobHTTPHeaders: { blobContentType: "application/json" },
-      });
-      return entry;
-    } catch (err) {
-      const isConflict = err instanceof RestError && err.statusCode === 412;
-      if (isConflict && attempt < MAX_RETRIES - 1) continue;
-      throw err;
-    }
-  }
-
-  throw new Error("Failed to save entry after repeated concurrent write conflicts");
-}
-
-export async function clearEntries(): Promise<void> {
-  const container = await getContainerClient();
-  const blockBlob = container.getBlockBlobClient(blobName);
-  const payload = Buffer.from("[]", "utf-8");
-  await blockBlob.upload(payload, payload.length, {
-    blobHTTPHeaders: { blobContentType: "application/json" },
-  });
 }

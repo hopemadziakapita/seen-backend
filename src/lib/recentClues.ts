@@ -4,8 +4,8 @@ import { loadEntries } from "./store";
 const LOOKBACK_DAYS = 3;
 
 /** Clue ids shown recently, used to apply scoreClue's repeat penalty. */
-export async function getRecentClueIds(excludeDate?: string): Promise<string[]> {
-  const entries = (await loadEntries())
+export async function getRecentClueIds(userId: string, excludeDate?: string): Promise<string[]> {
+  const entries = (await loadEntries(userId))
     .filter((e) => e.date !== excludeDate)
     .sort((a, b) => (a.date < b.date ? 1 : -1))
     .slice(0, LOOKBACK_DAYS);

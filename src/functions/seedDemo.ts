@@ -8,6 +8,12 @@ import { saveEntry } from "../lib/store";
 import { DEMO_PROFILES, DemoProfileKey } from "../data/profiles";
 import { ClueSelection, DailyEntry, SIMULATED_DATA_DISCLAIMER } from "../types";
 
+const DEMO_USER_IDS: Record<DemoProfileKey, string> = {
+  A: "demo-profile-a",
+  B: "demo-profile-b",
+  C: "demo-profile-c",
+};
+
 // Runs all three demo profiles through the full pipeline (auto-selecting the
 // top-ranked clues and a deterministic answer) and saves them as DailyEntry
 // records, so the co-occurrence endpoint has something to read across days.
@@ -18,9 +24,10 @@ app.http("seedDemo", {
   handler: async () => {
     const savedEntries: DailyEntry[] = [];
 
-    for (const key of Object.keys(DEMO_PROFILES) as DemoProfileKey[]) {
-      const context = DEMO_PROFILES[key].context;
-      const preview = await buildDayPreview(context);
+    for (const profileKey of Object.keys(DEMO_PROFILES) as DemoProfileKey[]) {
+      const context = DEMO_PROFILES[profileKey].context;
+      const userId = DEMO_USER_IDS[profileKey];
+      const preview = await buildDayPreview(context, userId);
       const topClueIds = preview.rankedClues.slice(0, 3).map((c) => c.id);
 
       const selectedClues: ClueSelection[] = [];
@@ -53,6 +60,7 @@ app.http("seedDemo", {
 
       const entry: DailyEntry = {
         id: uuidv4(),
+        userId,
         date: context.date,
         context,
         interpretedSignals: preview.interpretedSignals,
@@ -60,7 +68,7 @@ app.http("seedDemo", {
         selectedClues,
         generatedSummary,
       };
-      await saveEntry(entry);
+      await saveEntry(userId, entry);
       savedEntries.push(entry);
     }
 
