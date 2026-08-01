@@ -1,10 +1,13 @@
 {
-  "version": "0.0.1",
+  "version": "0.0.2",
   "configurations": [
     {
       "name": "seen_app",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd /Users/duckio/Documents/GitHub/seen_app && flutter run -d web-server --web-port 5173"],
+      "runtimeArgs": [
+        "-c",
+        "cd /Users/duckio/Documents/GitHub/seen_app && flutter run -d web-server --web-port 5173"
+      ],
       "port": 5173
     }
   ]
